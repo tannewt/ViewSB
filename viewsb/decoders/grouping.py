@@ -193,7 +193,8 @@ class USBTransactionDecoder(ViewSBDecoder):
         fields['subordinate_packets'] = self.packets_captured
         self.packets_captured = []
 
-        self.emit_packet(USBTransaction(**fields))
+        p = USBTransaction(**fields)
+        self.emit_packet(p)
 
 
     def consume_packet(self, packet):

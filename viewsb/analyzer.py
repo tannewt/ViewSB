@@ -43,6 +43,8 @@ class ViewSBAnalyzer:
             # FIXME: this should be ViewSBDecoder.__subclasses__
             decoders = ViewSBDecoder.all_decoders()
 
+            print(decoders)
+
         # Instantiate each of our decoder classes.
         self.decoders = [decoder(self) for decoder in decoders]
 

@@ -13,7 +13,7 @@ from .. import usb_types
 
 from ..backend import ViewSBBackend, FileBackend
 from ..packet import USBPacket, USBSetupTransfer, USBDataTransfer, USBStatusTransfer, USBControlTransfer, \
-     USBBulkTransfer, USBInterruptTransfer, USBIsochronousTransfer, USBTransferFragment, USBStatusTransfer, USBDataPacket, USBTokenPacket
+     USBBulkTransfer, USBInterruptTransfer, USBIsochronousTransfer, USBTransferFragment, USBHandshakePacket, USBDataPacket, USBTokenPacket
 from ..usb_types import USBDirection, USBRequestRecipient, USBRequestType, USBPacketID, USBTransferType
 
 from enum import Enum
@@ -405,7 +405,7 @@ class BeagleCSVFileBackend(FileBackend):
         i = 0
         for line in self.target_file:
             self._parse_line(line.strip())
-            if i > 20:
+            if i > 40:
                 break
             i += 1
 
@@ -413,13 +413,13 @@ class BeagleCSVFileBackend(FileBackend):
 
     def _parse_line(self, line):
         if line.startswith("#"):
-            print(line)
+            #print(line)
             return
         parts = [part.strip() for part in line.split(",")]
         packet_type = parts[9]
 
         if not packet_type.endswith("packet"):
-            print(line)
+            #print(line)
             return
         l = int(parts[5].split()[0])
         b = bytearray([int(x, 16) for x in parts[10].strip("…").split()])
@@ -434,7 +434,7 @@ class BeagleCSVFileBackend(FileBackend):
         elif packet_type in ("DATA1 packet", "DATA0 packet"):
             packet = USBDataPacket.from_raw_packet(b, timestamp=t)
         elif packet_type in ("ACK packet", ):
-            packet = USBStatusTransfer.from_raw_packet(b, timestamp=t)
+            packet = USBHandshakePacket.from_raw_packet(b, timestamp=t)
 
         if packet:
             print(parts)
