@@ -20,7 +20,9 @@ class CommandBlockWrapper(USBTransfer):
 
 
     def summarize(self):
-        return "tag {} to lun #{}".format(self.tag, self.lun)
+        return "tag {} to lun #{} with length {}".format(self.tag, self.lun, self.data_transfer_length)
+
+STATUS = ["passed", "failed", "phase error"]
 
 class CommandStatusWrapper(USBTransfer):
     signature = b"\x55\x53\x42\x53"
@@ -38,7 +40,104 @@ class CommandStatusWrapper(USBTransfer):
 
 
     def summarize(self):
-        return "tag {} reply {}".format(self.tag, self.status)
+        return "tag {} reply {}".format(self.tag, STATUS[self.status])
+
+class SCSICommand(USBTransfer):
+    @classmethod
+    def from_subordinates(cls, subordinates):
+        fields = subordinates[0].__dict__.copy()
+        fields["subordinate_packets"] = subordinates
+        fields["data"] = None
+        return cls(**fields)
+
+    def summarize(self):
+        return "unknown scsi command"
+
+class TestUnitReady(SCSICommand):
+    opcode = 0x00
+
+    FIELDS = {'control'}
+    @classmethod
+    def from_subordinates(cls, subordinates):
+        fields = subordinates[0].__dict__.copy()
+        fields["subordinate_packets"] = subordinates
+        fields['control'] = subordinates[0].data[5]
+
+        fields["data"] = None
+        return cls(**fields)
+
+
+    def summarize(self):
+        return str(self.control)
+
+SENSE_KEY = ["NO SENSE", "RECOVERED ERROR", "NOT READY", "MEDIUM ERROR", "HARDWARE ERROR", "ILLEGAL REQUEST", "UNIT ATTENTION", "DATA PROTECT", "BLANK CHECK", "VENDOR SPECIFIC", "COPY ABORTED", "ABORTED COMMAND", "Reserved", "VOLUME OVERFLOW", "MISCOMPARE", "COMPLETED"]
+
+ADDITIONAL_SENSE = {
+    (4, 0): "Logical Unit Not Ready, Cause Not Reportable"
+}
+class RequestSense(SCSICommand):
+    opcode = 0x03
+
+    FIELDS = {'descriptor_format', 'allocation_length', 'control', 'response_code', 'sense_key', 'additional_sense_code', 'additional_sense_code_qualifier'}
+    @classmethod
+    def from_subordinates(cls, subordinates):
+        fields = subordinates[0].__dict__.copy()
+        fields["subordinate_packets"] = subordinates
+        fields['descriptor_length'] = subordinates[0].data[1] & 0b1
+        fields['allocation_length'] = subordinates[0].data[4]
+        fields['control'] = subordinates[0].data[5]
+
+        data = subordinates[1].data[:fields['allocation_length']]
+        fields["data"] = data
+        response_code = data[0] & 0x7f
+        fields["response_code"] = response_code
+        if response_code in (0x70, 0x71):
+            fields['sense_key'] = data[2] & 0xf
+            fields['additional_sense_code'] = data[12]
+            fields['additional_sense_code_qualifier'] = data[13]
+        else:
+            fields['sense_key'] = data[1] & 0xf
+            fields['additional_sense_code'] = data[2]
+            fields['additional_sense_code_qualifier'] = data[3]
+
+        return cls(**fields)
+
+    def summarize(self):
+        additional_sense_key = (self.additional_sense_code, self.additional_sense_code_qualifier)
+        if additional_sense_key in ADDITIONAL_SENSE:
+            additional_sense = ADDITIONAL_SENSE[additional_sense_key]
+        else:
+            additional_sense = "({:02x}, {:02x})".format(*additional_sense_key)
+        return SENSE_KEY[self.sense_key] + " " + additional_sense
+
+class StartStopUnit(SCSICommand):
+    opcode = 0x1b
+
+    FIELDS = {'immediate', 'power_condition_modifier', 'power_condition', 'no_flush', 'load_eject', 'start', 'control'}
+
+    @classmethod
+    def from_subordinates(cls, subordinates):
+        fields = subordinates[0].__dict__.copy()
+        fields["subordinate_packets"] = subordinates
+        fields['immediate'] = subordinates[0].data[1] & 1 != 0
+        fields['power_condition_modifier'] = subordinates[0].data[3] & 0xf
+        fields['power_condition'] = (subordinates[0].data[4] & 0xf0) >> 4
+
+        fields['no_flush'] = subordinates[0].data[4] & 0b100 != 0
+        fields['load_eject'] = subordinates[0].data[4] & 0b10 != 0
+        fields['start'] = subordinates[0].data[4] & 0b1 != 0
+
+        fields["data"] = None
+        return cls(**fields)
+
+    def summarize(self):
+        if self.power_condition_modifier == 0:
+            if self.power_condition == 0:
+                bits = []
+                for bit in ["load_eject", "start"]:
+                    if getattr(self, bit, False):
+                        bits.append(bit)
+                return "start valid: " + " ".join(bits)
 
 class MSCTransaction(ViewSBDecoder):
     """
@@ -74,16 +173,34 @@ class SCSITransaction(ViewSBDecoder):
     def __init__(self, analyzer):
         super().__init__(analyzer)
         self.tag = None
+        self.subordinates = []
+
+        self.opcode_map = {}
+        for cls in [TestUnitReady, RequestSense, StartStopUnit]:
+            self.opcode_map[cls.opcode] = cls
 
     def can_handle_packet(self, packet):
         if isinstance(packet, (CommandBlockWrapper, CommandStatusWrapper)):
             return True
-        if self.tag:
+        if self.tag and isinstance(packet, USBTransaction):
             return True
         return False
 
 
     def consume_packet(self, packet):
-        print("parse", packet)
+        if isinstance(packet, CommandBlockWrapper):
+            self.tag = packet.tag
+        elif isinstance(packet, CommandStatusWrapper):
+            if self.tag != packet.tag:
+                pass
+                # handle this because it is an error.
+            self.subordinates.append(packet)
+            packet = self.opcode_map[self.subordinates[0].data[0]].from_subordinates(self.subordinates)
+            self.emit_packet(packet)
+            self.subordinates = []
+            self.tag = None
+
+        if self.tag:
+            self.subordinates.append(packet)
 
         #self.emit_packet(packet)

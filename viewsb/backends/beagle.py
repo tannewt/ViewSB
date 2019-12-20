@@ -402,12 +402,11 @@ class BeagleCSVFileBackend(FileBackend):
         it to `handle_data` for conversion into ViewSB packets.
         """
 
-        i = 0
         for line in self.target_file:
-            self._parse_line(line.strip())
-            if i > 40:
-                break
-            i += 1
+            try:
+                self._parse_line(line.strip())
+            except:
+                print(line)
 
         self.termination_event.set()
 
@@ -437,9 +436,9 @@ class BeagleCSVFileBackend(FileBackend):
             packet = USBHandshakePacket.from_raw_packet(b, timestamp=t)
 
         if packet:
-            print(parts)
-            print(packet)
-            print()
+            # print(parts)
+            # print(packet)
+            # print()
             self.emit_packet(packet)
         return
 
