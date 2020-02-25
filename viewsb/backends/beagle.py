@@ -128,7 +128,7 @@ class BeagleBackend(ViewSBBackend):
 
     def handle_data(self, data):
         """ Handle read and parsing of data from USBMon (or its capture file). """
-        print(data)
+        #print(data)
         event_handlers = {
             EventType.SUBMISSION: self._handle_submission_event,
             EventType.CALLBACK: self._handle_callback_event,

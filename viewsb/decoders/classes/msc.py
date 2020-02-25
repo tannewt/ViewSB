@@ -73,7 +73,8 @@ class TestUnitReady(SCSICommand):
 SENSE_KEY = ["NO SENSE", "RECOVERED ERROR", "NOT READY", "MEDIUM ERROR", "HARDWARE ERROR", "ILLEGAL REQUEST", "UNIT ATTENTION", "DATA PROTECT", "BLANK CHECK", "VENDOR SPECIFIC", "COPY ABORTED", "ABORTED COMMAND", "Reserved", "VOLUME OVERFLOW", "MISCOMPARE", "COMPLETED"]
 
 ADDITIONAL_SENSE = {
-    (4, 0): "Logical Unit Not Ready, Cause Not Reportable"
+    (4, 0): "Logical Unit Not Ready, Cause Not Reportable",
+    (0x3a, 0): "Media Not Present"
 }
 class RequestSense(SCSICommand):
     opcode = 0x03
@@ -109,6 +110,109 @@ class RequestSense(SCSICommand):
         else:
             additional_sense = "({:02x}, {:02x})".format(*additional_sense_key)
         return SENSE_KEY[self.sense_key] + " " + additional_sense
+
+class Inquiry(SCSICommand):
+    opcode = 0x12
+
+    FIELDS = {'descriptor_format', 'allocation_length', 'control', 'response_code', 'sense_key', 'additional_sense_code', 'additional_sense_code_qualifier'}
+    @classmethod
+    def from_subordinates(cls, subordinates):
+        fields = subordinates[0].__dict__.copy()
+        fields["subordinate_packets"] = subordinates
+        fields['descriptor_length'] = subordinates[0].data[1] & 0b1
+        fields['allocation_length'] = subordinates[0].data[4]
+        fields['control'] = subordinates[0].data[5]
+
+        data = subordinates[1].data[:fields['allocation_length']]
+        fields["data"] = data
+        response_code = data[0] & 0x7f
+        fields["response_code"] = response_code
+        if response_code in (0x70, 0x71):
+            fields['sense_key'] = data[2] & 0xf
+            fields['additional_sense_code'] = data[12]
+            fields['additional_sense_code_qualifier'] = data[13]
+        else:
+            fields['sense_key'] = data[1] & 0xf
+            fields['additional_sense_code'] = data[2]
+            fields['additional_sense_code_qualifier'] = data[3]
+
+        return cls(**fields)
+
+    def summarize(self):
+        additional_sense_key = (self.additional_sense_code, self.additional_sense_code_qualifier)
+        if additional_sense_key in ADDITIONAL_SENSE:
+            additional_sense = ADDITIONAL_SENSE[additional_sense_key]
+        else:
+            additional_sense = "({:02x}, {:02x})".format(*additional_sense_key)
+        return SENSE_KEY[self.sense_key] + " " + additional_sense
+
+class PreventAllowMediumRemoval(SCSICommand):
+    opcode = 0x1e
+
+    FIELDS = {'descriptor_format', 'allocation_length', 'control', 'response_code', 'sense_key', 'additional_sense_code', 'additional_sense_code_qualifier'}
+    @classmethod
+    def from_subordinates(cls, subordinates):
+        fields = subordinates[0].__dict__.copy()
+        fields["subordinate_packets"] = subordinates
+        fields['descriptor_length'] = subordinates[0].data[1] & 0b1
+        fields['allocation_length'] = subordinates[0].data[4]
+        fields['control'] = subordinates[0].data[5]
+
+        return cls(**fields)
+
+    def summarize(self):
+        return "not implemented"
+
+class ReadCapacity10(SCSICommand):
+    opcode = 0x25
+
+    FIELDS = {'descriptor_format', 'allocation_length', 'control', 'response_code', 'sense_key', 'additional_sense_code', 'additional_sense_code_qualifier'}
+    @classmethod
+    def from_subordinates(cls, subordinates):
+        fields = subordinates[0].__dict__.copy()
+        fields["subordinate_packets"] = subordinates
+        fields['descriptor_length'] = subordinates[0].data[1] & 0b1
+        fields['allocation_length'] = subordinates[0].data[4]
+        fields['control'] = subordinates[0].data[5]
+
+        return cls(**fields)
+
+    def summarize(self):
+        return "not implemented"
+
+class ModeSense6(SCSICommand):
+    opcode = 0x1a
+
+    FIELDS = {'descriptor_format', 'allocation_length', 'control', 'response_code', 'sense_key', 'additional_sense_code', 'additional_sense_code_qualifier'}
+    @classmethod
+    def from_subordinates(cls, subordinates):
+        fields = subordinates[0].__dict__.copy()
+        fields["subordinate_packets"] = subordinates
+        fields['descriptor_length'] = subordinates[0].data[1] & 0b1
+        fields['allocation_length'] = subordinates[0].data[4]
+        fields['control'] = subordinates[0].data[5]
+
+        return cls(**fields)
+
+    def summarize(self):
+        return "not implemented"
+
+class Read10(SCSICommand):
+    opcode = 0x28
+
+    FIELDS = {'descriptor_format', 'allocation_length', 'control', 'response_code', 'sense_key', 'additional_sense_code', 'additional_sense_code_qualifier'}
+    @classmethod
+    def from_subordinates(cls, subordinates):
+        fields = subordinates[0].__dict__.copy()
+        fields["subordinate_packets"] = subordinates
+        fields['descriptor_length'] = subordinates[0].data[1] & 0b1
+        fields['allocation_length'] = subordinates[0].data[4]
+        fields['control'] = subordinates[0].data[5]
+
+        return cls(**fields)
+
+    def summarize(self):
+        return "not implemented"
 
 class StartStopUnit(SCSICommand):
     opcode = 0x1b
@@ -147,7 +251,7 @@ class MSCTransaction(ViewSBDecoder):
     INCLUDE_IN_ALL = True
 
     def can_handle_packet(self, packet):
-        return type(packet) is USBTransaction and (
+        return type(packet) is USBTransaction and packet.data and (
             packet.data.startswith(CommandBlockWrapper.signature) or packet.data.startswith(CommandStatusWrapper.signature))
 
 
@@ -176,7 +280,7 @@ class SCSITransaction(ViewSBDecoder):
         self.subordinates = []
 
         self.opcode_map = {}
-        for cls in [TestUnitReady, RequestSense, StartStopUnit]:
+        for cls in [TestUnitReady, RequestSense, StartStopUnit, Inquiry, PreventAllowMediumRemoval, ReadCapacity10, ModeSense6, Read10]:
             self.opcode_map[cls.opcode] = cls
 
     def can_handle_packet(self, packet):
@@ -195,12 +299,13 @@ class SCSITransaction(ViewSBDecoder):
                 pass
                 # handle this because it is an error.
             self.subordinates.append(packet)
-            packet = self.opcode_map[self.subordinates[0].data[0]].from_subordinates(self.subordinates)
+            opcode = self.subordinates[0].data[0]
+            packet = self.opcode_map[opcode].from_subordinates(self.subordinates)
             self.emit_packet(packet)
             self.subordinates = []
             self.tag = None
 
-        if self.tag:
+        if self.tag is not None:
             self.subordinates.append(packet)
 
         #self.emit_packet(packet)
